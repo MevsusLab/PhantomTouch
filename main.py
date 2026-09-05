@@ -16,20 +16,31 @@ from mediapipe.tasks.python.vision import HandLandmarksConnections
 CAM = 0
 CAM_W, CAM_H = 640, 480
 MARGIN = 0.15
-SMOOTH = 0.35
-SNAP = 2.0
-PINCH_ON, PINCH_OFF = 0.38, 0.55
-COOLDOWN = 0.25
-SCROLL_K = 0.12
-SCROLL_DEAD = 1.5
-SCROLL_SMOOTH = 0.5
-SCROLL_MAX = 6
+# Two-stage filter: landmarks remove camera noise, adaptive cursor smoothing
+# stays precise for small motions but catches up quickly on large motions.
+LANDMARK_SMOOTH = 0.38
+CURSOR_SLOW = 0.12
+CURSOR_FAST = 0.68
+CURSOR_SPEED_REF = 0.10  # fraction of the screen diagonal
+CURSOR_DEADZONE = 2.5
+CLICK_ON, CLICK_OFF = 0.34, 0.50
+CLICK_CONFIRM_FRAMES = 3
+RELEASE_CONFIRM_FRAMES = 2
+COOLDOWN = 0.30
+# Ring + little finger gesture: upward = scroll up, downward = scroll down.
+SCROLL_K = 0.55
+SCROLL_DEAD = 0.65
+SCROLL_SMOOTH = 0.42
+SCROLL_MAX = 14
+# Warn only when the index fingertip reaches/leaves the physical camera frame.
+INDEX_EDGE_GUARD = 0.025
+INDEX_WARNING_HOLD = 0.45
 MODEL = "hand_landmarker.task"
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
              "hand_landmarker/float16/1/hand_landmarker.task")
 WIN = "AiMouse"
 
-WRIST, THUMB, INDEX, MID_MCP = 0, 4, 8, 9
+WRIST, THUMB, INDEX, MIDDLE, MID_MCP = 0, 4, 8, 12, 9
 PIPS = (6, 10, 14, 18)
 TIPS = (8, 12, 16, 20)
 PALM = [0, 5, 9, 13, 17]
@@ -55,33 +66,80 @@ def get_model():
 
 
 def open_cam():
-    cap = cv2.VideoCapture(CAM, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(CAM)
-    if not cap.isOpened():
-        sys.exit("camera %d is busy or missing" % CAM)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return cap
+    """Open the camera only after a backend successfully returns a real frame."""
+    if sys.platform == "win32":
+        backends = ((cv2.CAP_MSMF, "MSMF"),
+                    (cv2.CAP_DSHOW, "DirectShow"),
+                    (cv2.CAP_ANY, "automatic"))
+    else:
+        backends = ((cv2.CAP_ANY, "automatic"),)
+
+    for backend, name in backends:
+        cap = cv2.VideoCapture(CAM, backend)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # Some webcams need a short warm-up before the first valid frame.
+        for _ in range(25):
+            ok, frame = cap.read()
+            if ok and frame is not None and frame.size:
+                print("camera backend: %s" % name)
+                return cap
+            time.sleep(0.04)
+        cap.release()
+
+    raise RuntimeError(
+        "camera %d opened but produced no frames; close apps using the camera "
+        "and check Windows camera permissions" % CAM)
 
 
 def to_px(lms, w, h):
     return np.array([[l.x * w, l.y * h] for l in lms], np.float32)
 
 
-def pinch_dist(p):
+def click_dist(p):
+    """Scale-independent distance from thumb tip to middle-finger tip."""
     palm = np.linalg.norm(p[MID_MCP] - p[WRIST])
     if palm < 1e-3:
         return math.inf
-    return float(np.linalg.norm(p[THUMB] - p[INDEX]) / palm)
+    return float(np.linalg.norm(p[THUMB] - p[MIDDLE]) / palm)
 
 
-def is_fist(p):
-    for pip, tip in zip(PIPS, TIPS):
-        if np.linalg.norm(p[tip] - p[WRIST]) >= np.linalg.norm(p[pip] - p[WRIST]):
-            return False
-    return True
+def finger_angle(p, mcp, pip, tip):
+    """Angle at the PIP joint: about 180° straight, smaller when folded."""
+    a = p[mcp] - p[pip]
+    b = p[tip] - p[pip]
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denom < 1e-6:
+        return 0.0
+    cosine = clamp(float(np.dot(a, b) / denom), -1.0, 1.0)
+    return math.degrees(math.acos(cosine))
+
+
+def is_scroll_gesture(p):
+    """Recognize two raised outer fingers even when the hand is slightly rotated."""
+    index_angle = finger_angle(p, 5, 6, 8)
+    middle_angle = finger_angle(p, 9, 10, 12)
+    ring_angle = finger_angle(p, 13, 14, 16)
+    little_angle = finger_angle(p, 17, 18, 20)
+
+    # MediaPipe often reports the short little finger as only partly straight.
+    # Tolerant angle thresholds keep the gesture usable with a rotated hand.
+    outer_up = ring_angle > 110 and little_angle > 105
+    inner_folded = index_angle < 165 and middle_angle < 165
+    return outer_up and inner_folded
+
+
+def index_tip_out_of_frame(p, w, h):
+    """Return True only when the index fingertip touches/leaves camera view."""
+    x, y = p[INDEX]
+    gx, gy = INDEX_EDGE_GUARD * w, INDEX_EDGE_GUARD * h
+    return x <= gx or x >= w - gx or y <= gy or y >= h - gy
 
 
 def draw_hand(img, p):
@@ -109,8 +167,10 @@ def main():
     cv2.namedWindow(WIN, cv2.WINDOW_AUTOSIZE)
 
     cx = cy = None
-    pinching = False
+    filtered_tip = None
+    clicking = False
     armed = False
+    close_frames = release_frames = 0
     last_click = 0.0
     last_palm = None
     vel = 0.0
@@ -120,18 +180,26 @@ def main():
     bad = 0
     t0 = prev = time.perf_counter()
     prev_ts = -1
+    index_warning_until = 0.0
 
     print("screen %dx%d, camera %d, press q to quit" % (SW, SH, CAM))
 
     with vision.HandLandmarker.create_from_options(opts) as hl:
         while True:
             ok, frame = cap.read()
-            if not ok:
+            if not ok or frame is None or not frame.size:
                 bad += 1
-                if bad > 30:
-                    print("lost the camera feed")
-                    break
-                time.sleep(0.01)
+                if bad >= 30:
+                    print("camera feed interrupted, reconnecting...")
+                    cap.release()
+                    try:
+                        cap = open_cam()
+                        bad = 0
+                    except RuntimeError as error:
+                        print(error)
+                        break
+                else:
+                    time.sleep(0.02)
                 continue
             bad = 0
 
@@ -152,26 +220,44 @@ def main():
 
             if not hands:
                 cx = cy = None
+                filtered_tip = None
                 last_palm = None
-                pinching = False
+                clicking = False
+                close_frames = release_frames = 0
                 vel = acc = 0.0
+                if time.perf_counter() < index_warning_until:
+                    state, col = "show index finger", (0, 70, 255)
             else:
                 p = to_px(hands[0], w, h)
                 draw_hand(frame, p)
-                d = pinch_dist(p)
+                d = click_dist(p)
+                if index_tip_out_of_frame(p, w, h):
+                    index_warning_until = time.perf_counter() + INDEX_WARNING_HOLD
 
-                if is_fist(p):
-                    state, col = "scroll", (255, 200, 60)
+                if time.perf_counter() < index_warning_until:
+                    state, col = "show index finger", (0, 70, 255)
                     cx = cy = None
-                    pinching = False
-                    palm = float(np.mean(p[PALM, 1]))
+                    filtered_tip = None
+                    last_palm = None
+                    clicking = False
+                    armed = False
+                    close_frames = release_frames = 0
+                    vel = acc = 0.0
+                elif is_scroll_gesture(p):
+                    state, col = "scroll: ring + little", (255, 200, 60)
+                    cx = cy = None
+                    filtered_tip = None
+                    clicking = False
+                    close_frames = release_frames = 0
+                    # Follow the two active fingertips instead of the whole palm.
+                    scroll_y = float(np.mean(p[[16, 20], 1]))
                     if last_palm is None:
-                        last_palm = palm
+                        last_palm = scroll_y
                         warmup = 2
                         vel = acc = 0.0
                     else:
-                        dy = last_palm - palm
-                        last_palm = palm
+                        dy = last_palm - scroll_y
+                        last_palm = scroll_y
                         if warmup:
                             warmup -= 1
                         else:
@@ -190,37 +276,57 @@ def main():
                     vel = acc = 0.0
 
                     now = time.perf_counter()
-                    if d > PINCH_OFF:
-                        pinching = False
+                    if d < CLICK_ON:
+                        close_frames += 1
+                        release_frames = 0
+                    elif d > CLICK_OFF:
+                        release_frames += 1
+                        close_frames = 0
+                    else:
+                        close_frames = release_frames = 0
+
+                    if release_frames >= RELEASE_CONFIRM_FRAMES:
+                        clicking = False
                         armed = True
-                    elif d < PINCH_ON and not pinching:
-                        pinching = True
+                    elif (close_frames >= CLICK_CONFIRM_FRAMES and not clicking):
+                        clicking = True
                         if armed and now - last_click >= COOLDOWN:
                             pyautogui.click()
                             last_click = now
                             armed = False
-                            cv2.circle(frame, (int(p[INDEX][0]), int(p[INDEX][1])),
+                            cv2.circle(frame, tuple(p[MIDDLE].astype(int)),
                                        18, (0, 0, 255), 3, cv2.LINE_AA)
 
-                    state = "click" if pinching else "move"
-                    col = (80, 80, 255) if pinching else (90, 230, 90)
+                    state = "click" if clicking else "move"
+                    col = (80, 80, 255) if clicking else (90, 230, 90)
 
-                    fx, fy = p[INDEX]
+                    raw_tip = p[INDEX].copy()
+                    if filtered_tip is None:
+                        filtered_tip = raw_tip
+                    else:
+                        filtered_tip += (raw_tip - filtered_tip) * LANDMARK_SMOOTH
+                    fx, fy = filtered_tip
                     tx = float(np.interp(fx, (MARGIN * w, (1 - MARGIN) * w), (0, SW - 1)))
                     ty = float(np.interp(fy, (MARGIN * h, (1 - MARGIN) * h), (0, SH - 1)))
+                    tx, ty = clamp(tx, 0, SW - 1), clamp(ty, 0, SH - 1)
 
                     if cx is None:
                         cx, cy = tx, ty
-                    elif not pinching:
-                        cx += (tx - cx) * SMOOTH
-                        cy += (ty - cy) * SMOOTH
-                        if abs(tx - cx) < SNAP:
-                            cx = tx
-                        if abs(ty - cy) < SNAP:
-                            cy = ty
+                    elif not clicking:
+                        dx, dy = tx - cx, ty - cy
+                        distance = math.hypot(dx, dy)
+                        if distance > CURSOR_DEADZONE:
+                            speed = clamp(distance / (math.hypot(SW, SH) *
+                                                       CURSOR_SPEED_REF), 0.0, 1.0)
+                            alpha = CURSOR_SLOW + (CURSOR_FAST - CURSOR_SLOW) * speed
+                            cx += dx * alpha
+                            cy += dy * alpha
 
                     pyautogui.moveTo(int(clamp(cx, 0, SW - 1)), int(clamp(cy, 0, SH - 1)))
-                    cv2.circle(frame, (int(fx), int(fy)), 11, col, 2, cv2.LINE_AA)
+                    cv2.circle(frame, tuple(filtered_tip.astype(int)), 11, col, 2,
+                               cv2.LINE_AA)
+                    cv2.line(frame, tuple(p[THUMB].astype(int)),
+                             tuple(p[MIDDLE].astype(int)), col, 2, cv2.LINE_AA)
 
             now = time.perf_counter()
             dt = now - prev
@@ -232,9 +338,17 @@ def main():
             cv2.rectangle(frame, (mx, my), (w - mx, h - my), (255, 170, 0), 2)
             cv2.putText(frame, state, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2,
                         cv2.LINE_AA)
+            if state == "show index finger":
+                message = "SHOW INDEX FINGER"
+                (tw, th), _ = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 0.85, 2)
+                x, y = (w - tw) // 2, h // 2
+                cv2.rectangle(frame, (x - 14, y - th - 14),
+                              (x + tw + 14, y + 14), (0, 0, 0), -1)
+                cv2.putText(frame, message, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.85, col, 2, cv2.LINE_AA)
             info = "fps %.0f" % fps
             if d is not None and math.isfinite(d):
-                info += "   pinch %.2f" % d
+                info += "   thumb-middle %.2f" % d
             cv2.putText(frame, info, (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (230, 230, 230), 1, cv2.LINE_AA)
             cv2.imshow(WIN, frame)
