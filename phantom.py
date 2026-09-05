@@ -1,4 +1,3 @@
-"""Phantom desktop control panel."""
 from __future__ import annotations
 
 import threading
@@ -103,7 +102,7 @@ class PhantomApp(tk.Tk):
         c.create_polygon(0, 18, 18, 0, w, 0, w - 18, 18, fill=PANEL_2)
         c.create_text(w / 2, 75, text="PHANTOM", fill=YELLOW,
                       font=("Impact", 58), anchor="center")
-        # Irregular paint runs tied visually to the word's baseline.
+
         for x, length, width in ((w*.24, 34, 9), (w*.31, 17, 5), (w*.42, 44, 8),
                                  (w*.51, 22, 6), (w*.62, 38, 10), (w*.70, 20, 5)):
             c.create_polygon(x-width, 112, x+width, 112, x+width*.45, 112+length,

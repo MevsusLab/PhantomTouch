@@ -17,30 +17,30 @@ from phantom_config import PhantomSettings, load_settings
 CAM = 0
 CAM_W, CAM_H = 640, 480
 MARGIN = 0.15
-# Two-stage filter: landmarks remove camera noise, adaptive cursor smoothing
-# stays precise for small motions but catches up quickly on large motions.
+
+
 LANDMARK_SMOOTH = 0.38
 CURSOR_SLOW = 0.12
 CURSOR_FAST = 0.68
-CURSOR_SPEED_REF = 0.10  # fraction of the screen diagonal
+CURSOR_SPEED_REF = 0.10
 CURSOR_DEADZONE = 2.5
 CLICK_ON, CLICK_OFF = 0.34, 0.50
 CLICK_CONFIRM_FRAMES = 3
 RELEASE_CONFIRM_FRAMES = 2
 COOLDOWN = 0.30
-# Ring + little finger gesture: extending only the fingers scrolls up, bending
-# them scrolls down. Palm translation is ignored completely.
-SCROLL_DEAD_SPEED = 0.12       # normalized finger-extension units per second
-SCROLL_GAIN = 32.0             # wheel steps per extension unit
+
+
+SCROLL_DEAD_SPEED = 0.12
+SCROLL_GAIN = 32.0
 SCROLL_SMOOTH = 0.42
-SCROLL_MAX_RATE = 55.0         # wheel steps per second
+SCROLL_MAX_RATE = 55.0
 SCROLL_ACTIVATE_FRAMES = 2
 SCROLL_RELEASE_FRAMES = 3
-# A closed fist switches to the next application once, then must be released.
+
 FIST_CONFIRM_FRAMES = 3
 FIST_RELEASE_FRAMES = 4
 APP_SWITCH_COOLDOWN = 0.9
-# Warn only when the index fingertip reaches/leaves the physical camera frame.
+
 INDEX_EDGE_GUARD = 0.025
 INDEX_WARNING_HOLD = 0.45
 MODEL = "hand_landmarker.task"
@@ -52,10 +52,10 @@ WRIST, THUMB, INDEX, MIDDLE, MID_MCP = 0, 4, 8, 12, 9
 PIPS = (6, 10, 14, 18)
 TIPS = (8, 12, 16, 20)
 PALM = [0, 5, 9, 13, 17]
-# The reference marks the ring and little fingers. Include each complete chain,
-# from its stable palm knuckle (MCP) through PIP/DIP to fingertip.
+
+
 SCROLL_FINGERS = ((13, 14, 15, 16), (17, 18, 19, 20))
-SCROLL_COLORS = ((255, 80, 40), (40, 80, 255))  # BGR: cyan-blue / red
+SCROLL_COLORS = ((255, 80, 40), (40, 80, 255))
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
@@ -96,7 +96,7 @@ def open_cam(camera_index=CAM):
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        # Some webcams need a short warm-up before the first valid frame.
+
         for _ in range(25):
             ok, frame = cap.read()
             if ok and frame is not None and frame.size:
@@ -134,11 +134,7 @@ def finger_angle(p, mcp, pip, tip):
 
 
 def finger_extension(p, mcp, pip, dip, tip):
-    """Return straight-line reach divided by the finger's full joint-chain length.
-
-    Both numerator and denominator are palm/knuckle-relative, so rigid hand
-    translation cancels exactly while flexion changes the result.
-    """
+    """Measure finger reach relative to its joint-chain length."""
     chain_length = sum(float(np.linalg.norm(p[b] - p[a]))
                        for a, b in ((mcp, pip), (pip, dip), (dip, tip)))
     if chain_length < 1e-3:
@@ -151,8 +147,8 @@ def scroll_pose(p):
     index_angle = finger_angle(p, 5, 6, 8)
     middle_angle = finger_angle(p, 9, 10, 12)
 
-    # Do not gate on ring/little angle: doing so would drop scrolling at the
-    # flexed end of a stroke. The stricter all-finger fist test remains distinct.
+
+
     return index_angle < 150 and middle_angle < 150 and not is_fist(p)
 
 
@@ -162,7 +158,6 @@ def scroll_finger_position(p):
 
 
 def is_scroll_gesture(p):
-    """Compatibility wrapper used by gesture tests."""
     return scroll_pose(p)
 
 
@@ -178,14 +173,14 @@ def is_fist(p):
         finger_angle(p, 13, 14, 16),
         finger_angle(p, 17, 18, 20),
     )
-    # Require every fingertip to be near the palm as well as bent. Combining
-    # both tests avoids confusing a rotated open hand with a fist.
+
+
     tip_near_palm = all(
         np.linalg.norm(p[tip] - p[MID_MCP]) / palm_size < limit
         for tip, limit in zip(TIPS, (1.35, 1.25, 1.30, 1.45))
     )
-    # A true fist also tucks the thumb. Keeping the thumb out distinguishes the
-    # scroll hold even when ring/little reach their fully flexed stroke endpoint.
+
+
     thumb_tucked = np.linalg.norm(p[THUMB] - p[MID_MCP]) / palm_size < 0.70
     return max(angles) < 150 and tip_near_palm and thumb_tucked
 
@@ -208,7 +203,7 @@ def draw_hand(img, p):
         else:
             cv2.circle(img, (int(x), int(y)), 4, (120, 255, 120), -1, cv2.LINE_AA)
 
-    # Emphasize the complete ring and little chains over the generic skeleton.
+
     for chain, color in zip(SCROLL_FINGERS, SCROLL_COLORS):
         points = np.round(p[list(chain)]).astype(np.int32).reshape((-1, 1, 2))
         cv2.polylines(img, [points], False, (20, 20, 20), 8, cv2.LINE_AA)
@@ -301,22 +296,22 @@ def main(settings=None, stop_event=None, status_callback=None):
                         time.sleep(0.02)
                     continue
                 bad = 0
-    
+
                 frame = cv2.flip(frame, 1)
                 h, w = frame.shape[:2]
                 rgb = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    
+
                 ts = int((time.perf_counter() - t0) * 1000)
                 if ts <= prev_ts:
                     ts = prev_ts + 1
                 prev_ts = ts
-    
+
                 res = hl.detect_for_video(
                     mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
                 hands = res.hand_landmarks
-    
+
                 state, col, d = "no hand", (140, 140, 140), None
-    
+
                 if not hands:
                     cx = cy = None
                     filtered_tip = None
@@ -334,7 +329,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                     d = click_dist(p)
                     if index_tip_out_of_frame(p, w, h):
                         index_warning_until = time.perf_counter() + INDEX_WARNING_HOLD
-    
+
                     if time.perf_counter() < index_warning_until:
                         state, col = "show index finger", (0, 70, 255)
                         cx = cy = None
@@ -355,8 +350,8 @@ def main(settings=None, stop_event=None, status_callback=None):
                             fist_release_frames += 1
                             if fist_release_frames >= FIST_RELEASE_FRAMES:
                                 fist_armed = True
-    
-                        # A fist has priority over scrolling and pointer movement.
+
+
                         gesture_now = not fist_now and is_scroll_gesture(p)
                         if gesture_now:
                             scroll_on_frames += 1
@@ -368,7 +363,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                             scroll_on_frames = 0
                             if scroll_off_frames >= SCROLL_RELEASE_FRAMES or fist_now:
                                 scroll_active = False
-    
+
                         if fist_now:
                             state, col = "fist: next application", (180, 90, 255)
                             cx = cy = None
@@ -389,11 +384,11 @@ def main(settings=None, stop_event=None, status_callback=None):
                             filtered_tip = None
                             clicking = False
                             close_frames = release_frames = 0
-    
+
                             now = time.perf_counter()
-                            # Measure how much the ring and little fingers bend relative
-                            # to their own joints. Moving the entire hand changes neither
-                            # value, so only the fingers can produce scrolling.
+
+
+
                             finger_pos = scroll_finger_position(p)
                             if last_palm is None or last_scroll_time is None:
                                 last_palm = finger_pos
@@ -405,7 +400,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                                 last_palm = finger_pos
                                 last_scroll_time = now
                                 vel += (raw_speed - vel) * SCROLL_SMOOTH
-    
+
                                 effective_speed = (math.copysign(
                                     abs(vel) - scroll_dead_speed, vel)
                                     if abs(vel) > scroll_dead_speed else 0.0)
@@ -416,7 +411,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                                 if n:
                                     acc -= n
                                     pyautogui.scroll(n)
-    
+
                             direction = "UP" if vel > scroll_dead_speed else (
                                 "DOWN" if vel < -scroll_dead_speed else "HOLD")
                             draw_scroll_indicator(frame, p, vel)
@@ -427,7 +422,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                             last_palm = None
                             last_scroll_time = None
                             vel = acc = 0.0
-    
+
                             now = time.perf_counter()
                             if d < CLICK_ON:
                                 close_frames += 1
@@ -437,7 +432,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                                 close_frames = 0
                             else:
                                 close_frames = release_frames = 0
-    
+
                             if release_frames >= RELEASE_CONFIRM_FRAMES:
                                 clicking = False
                                 armed = True
@@ -449,10 +444,10 @@ def main(settings=None, stop_event=None, status_callback=None):
                                     armed = False
                                     cv2.circle(frame, tuple(p[MIDDLE].astype(int)),
                                                18, (0, 0, 255), 3, cv2.LINE_AA)
-    
+
                             state = "click" if clicking else "move"
                             col = (80, 80, 255) if clicking else (90, 230, 90)
-    
+
                             raw_tip = p[INDEX].copy()
                             if filtered_tip is None:
                                 filtered_tip = raw_tip
@@ -464,7 +459,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                             ty = float(np.interp(fy, (MARGIN * h, (1 - MARGIN) * h),
                                                  (0, SH - 1)))
                             tx, ty = clamp(tx, 0, SW - 1), clamp(ty, 0, SH - 1)
-    
+
                             if cx is None:
                                 cx, cy = tx, ty
                             elif not clicking:
@@ -476,20 +471,20 @@ def main(settings=None, stop_event=None, status_callback=None):
                                     alpha = cursor_slow + (cursor_fast - cursor_slow) * speed
                                     cx += dx * alpha
                                     cy += dy * alpha
-    
+
                             pyautogui.moveTo(int(clamp(cx, 0, SW - 1)),
                                              int(clamp(cy, 0, SH - 1)))
                             cv2.circle(frame, tuple(filtered_tip.astype(int)), 11, col, 2,
                                        cv2.LINE_AA)
                             cv2.line(frame, tuple(p[THUMB].astype(int)),
                                      tuple(p[MIDDLE].astype(int)), col, 2, cv2.LINE_AA)
-    
+
                 now = time.perf_counter()
                 dt = now - prev
                 prev = now
                 if dt > 0:
                     fps += (1 / dt - fps) * 0.15
-    
+
                 mx, my = int(MARGIN * w), int(MARGIN * h)
                 cv2.rectangle(frame, (mx, my), (w - mx, h - my), (255, 170, 0), 2)
                 cv2.putText(frame, state, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2,

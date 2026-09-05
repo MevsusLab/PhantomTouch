@@ -1,4 +1,3 @@
-"""Validated, persistent settings for Phantom gesture control."""
 from __future__ import annotations
 
 import json

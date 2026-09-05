@@ -6,14 +6,13 @@ import main
 
 
 def scroll_hand(outer_flexed=False):
-    """Synthetic hand with folded inner fingers and movable ring/little fingers."""
     p = np.zeros((21, 2), dtype=np.float64)
     p[0] = (0, 40)
     p[1:5] = [(8, 32), (15, 25), (20, 20), (24, 18)]
     p[5], p[9], p[13], p[17] = (-18, 0), (-6, 0), (6, 0), (18, 2)
 
-    # Index/middle are bent but deliberately remain outside the compact-fist
-    # radius. This is the held scroll pose, not an Alt+Tab fist.
+
+
     p[6:9] = [(-18, -12), (-30, -12), (-38, -4)]
     p[10:13] = [(-6, -14), (-18, -14), (-26, -5)]
 
