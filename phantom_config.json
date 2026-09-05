@@ -1,0 +1,9 @@
+{
+  "camera_index": 0,
+  "cursor_responsiveness": 0.68,
+  "cursor_smoothing": 0.38,
+  "debug_overlay": true,
+  "fist_alt_tab": true,
+  "scroll_dead_zone": 0.12,
+  "scroll_sensitivity": 32.0
+}
