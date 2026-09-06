@@ -12,6 +12,7 @@ import mediapipe as mp
 from mediapipe.tasks import python as mtp
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision import HandLandmarksConnections
+from gesture_state import PauseController
 from phantom_config import PhantomSettings, load_settings
 
 CAM = 0
@@ -185,6 +186,20 @@ def is_fist(p):
     return max(angles) < 150 and tip_near_palm and thumb_tucked
 
 
+def is_open_palm(p):
+    palm_size = float(np.linalg.norm(p[MID_MCP] - p[WRIST]))
+    if palm_size < 1e-3:
+        return False
+    angles = (
+        finger_angle(p, 5, 6, 8),
+        finger_angle(p, 9, 10, 12),
+        finger_angle(p, 13, 14, 16),
+        finger_angle(p, 17, 18, 20),
+    )
+    thumb_reach = float(np.linalg.norm(p[THUMB] - p[MID_MCP]) / palm_size)
+    return min(angles) > 165 and thumb_reach > 0.75
+
+
 def index_tip_out_of_frame(p, w, h):
     """Return True only when the index fingertip touches/leaves camera view."""
     x, y = p[INDEX]
@@ -227,7 +242,7 @@ def draw_scroll_indicator(img, p, velocity):
         cv2.arrowedLine(img, start, end, color, 4, cv2.LINE_AA, tipLength=0.4)
 
 
-def main(settings=None, stop_event=None, status_callback=None):
+def main(settings=None, stop_event=None, pause_event=None, status_callback=None):
     """Run gesture control until q/window close or stop_event is set."""
     settings = settings or load_settings()
     if not isinstance(settings, PhantomSettings):
@@ -237,6 +252,10 @@ def main(settings=None, stop_event=None, status_callback=None):
     cursor_slow = min(CURSOR_SLOW, cursor_fast)
     scroll_gain = settings.scroll_sensitivity
     scroll_dead_speed = settings.scroll_dead_zone
+    margin = settings.active_area_margin
+    pause_controller = PauseController(settings.open_palm_hold_seconds,
+                                       settings.gesture_debounce_seconds,
+                                       settings.auto_pause_seconds)
 
     opts = vision.HandLandmarkerOptions(
         base_options=mtp.BaseOptions(model_asset_path=get_model()),
@@ -273,7 +292,8 @@ def main(settings=None, stop_event=None, status_callback=None):
     prev_ts = -1
     index_warning_until = 0.0
 
-    print("screen %dx%d, camera %d, press q to quit" % (SW, SH, CAM))
+    print("screen %dx%d, camera %d, press q to quit" %
+          (SW, SH, settings.camera_index))
 
     try:
         with vision.HandLandmarker.create_from_options(opts) as hl:
@@ -311,8 +331,32 @@ def main(settings=None, stop_event=None, status_callback=None):
                 hands = res.hand_landmarks
 
                 state, col, d = "no hand", (140, 140, 140), None
+                state_now = time.perf_counter()
+                state_points = to_px(hands[0], w, h) if hands else None
+                emergency = pause_event is not None and pause_event.is_set()
+                pause_update = pause_controller.update(
+                    state_now, bool(hands),
+                    state_points is not None and is_open_palm(state_points), emergency)
+                if emergency:
+                    pause_event.clear()
+                if pause_update.changed and status_callback:
+                    status_callback(pause_update.reason)
 
-                if not hands:
+                if pause_update.paused or pause_update.hold_progress > 0:
+                    if state_points is not None:
+                        draw_hand(frame, state_points)
+                    state = pause_update.reason if pause_update.paused else (
+                        "hold open palm: %d%%" % int(pause_update.hold_progress * 100))
+                    col = (0, 80, 255) if pause_update.paused else (0, 210, 255)
+                    cx = cy = None
+                    filtered_tip = None
+                    last_palm = last_scroll_time = None
+                    scroll_active = False
+                    scroll_on_frames = scroll_off_frames = 0
+                    clicking = False
+                    close_frames = release_frames = 0
+                    vel = acc = 0.0
+                elif not hands:
                     cx = cy = None
                     filtered_tip = None
                     last_palm = last_scroll_time = None
@@ -424,7 +468,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                             vel = acc = 0.0
 
                             now = time.perf_counter()
-                            if d < CLICK_ON:
+                            if settings.click_enabled and d < CLICK_ON:
                                 close_frames += 1
                                 release_frames = 0
                             elif d > CLICK_OFF:
@@ -454,9 +498,9 @@ def main(settings=None, stop_event=None, status_callback=None):
                             else:
                                 filtered_tip += (raw_tip - filtered_tip) * landmark_smooth
                             fx, fy = filtered_tip
-                            tx = float(np.interp(fx, (MARGIN * w, (1 - MARGIN) * w),
+                            tx = float(np.interp(fx, (margin * w, (1 - margin) * w),
                                                  (0, SW - 1)))
-                            ty = float(np.interp(fy, (MARGIN * h, (1 - MARGIN) * h),
+                            ty = float(np.interp(fy, (margin * h, (1 - margin) * h),
                                                  (0, SH - 1)))
                             tx, ty = clamp(tx, 0, SW - 1), clamp(ty, 0, SH - 1)
 
@@ -485,7 +529,7 @@ def main(settings=None, stop_event=None, status_callback=None):
                 if dt > 0:
                     fps += (1 / dt - fps) * 0.15
 
-                mx, my = int(MARGIN * w), int(MARGIN * h)
+                mx, my = int(margin * w), int(margin * h)
                 cv2.rectangle(frame, (mx, my), (w - mx, h - my), (255, 170, 0), 2)
                 cv2.putText(frame, state, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, col, 2,
                             cv2.LINE_AA)

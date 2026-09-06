@@ -1,9 +1,14 @@
 {
+  "active_area_margin": 0.15,
+  "auto_pause_seconds": 3.0,
   "camera_index": 0,
+  "click_enabled": true,
   "cursor_responsiveness": 0.68,
   "cursor_smoothing": 0.38,
   "debug_overlay": true,
   "fist_alt_tab": true,
+  "gesture_debounce_seconds": 0.8,
+  "open_palm_hold_seconds": 1.2,
   "scroll_dead_zone": 0.12,
   "scroll_sensitivity": 32.0
 }

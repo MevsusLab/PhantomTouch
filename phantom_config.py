@@ -15,6 +15,11 @@ class PhantomSettings:
     scroll_sensitivity: float = 32.0
     scroll_dead_zone: float = 0.12
     camera_index: int = 0
+    active_area_margin: float = 0.15
+    click_enabled: bool = True
+    open_palm_hold_seconds: float = 1.2
+    gesture_debounce_seconds: float = 0.8
+    auto_pause_seconds: float = 3.0
     fist_alt_tab: bool = True
     debug_overlay: bool = True
 
@@ -25,6 +30,10 @@ class PhantomSettings:
             "scroll_sensitivity": (1.0, 100.0),
             "scroll_dead_zone": (0.0, 1.0),
             "camera_index": (0, 20),
+            "active_area_margin": (0.0, 0.45),
+            "open_palm_hold_seconds": (0.3, 5.0),
+            "gesture_debounce_seconds": (0.0, 5.0),
+            "auto_pause_seconds": (0.0, 60.0),
         }
         for name, (low, high) in limits.items():
             value = getattr(self, name)
@@ -34,7 +43,7 @@ class PhantomSettings:
                 raise ValueError("%s must be between %s and %s" % (name, low, high))
         if not isinstance(self.camera_index, int):
             raise ValueError("camera_index must be an integer")
-        for name in ("fist_alt_tab", "debug_overlay"):
+        for name in ("click_enabled", "fist_alt_tab", "debug_overlay"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError("%s must be true or false" % name)
 

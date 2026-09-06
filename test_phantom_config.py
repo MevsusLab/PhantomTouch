@@ -25,9 +25,23 @@ class PhantomConfigTests(unittest.TestCase):
                 json.dump({"camera_index": 3, "future_option": 1}, handle)
             self.assertEqual(load_settings(path).camera_index, 3)
 
+    def test_new_controls_round_trip(self):
+        settings = PhantomSettings(active_area_margin=0.2, click_enabled=False,
+                                   open_palm_hold_seconds=1.5,
+                                   gesture_debounce_seconds=1.0,
+                                   auto_pause_seconds=4.0)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "settings.json")
+            save_settings(settings, path)
+            self.assertEqual(load_settings(path), settings)
+
     def test_invalid_range_is_rejected(self):
         with self.assertRaises(ValueError):
             PhantomSettings(scroll_dead_zone=2.0)
+        with self.assertRaises(ValueError):
+            PhantomSettings(active_area_margin=0.5)
+        with self.assertRaises(ValueError):
+            PhantomSettings(click_enabled=1)
 
     def test_invalid_file_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:

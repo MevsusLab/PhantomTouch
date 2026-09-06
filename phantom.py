@@ -20,13 +20,15 @@ class PhantomApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Phantom")
-        self.geometry("940x700")
-        self.minsize(820, 640)
+        self.geometry("940x820")
+        self.minsize(820, 760)
         self.configure(bg=NAVY)
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.worker = None
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
         self.vars = {}
+        self.bind_all("<Control-Shift-P>", self.emergency_pause)
         self._style()
         self._build()
         try:
@@ -64,6 +66,10 @@ class PhantomApp(tk.Tk):
         self._slider(left, "Cursor smoothing", "cursor_smoothing", 0.05, 1.0)
         self._slider(left, "Scroll sensitivity", "scroll_sensitivity", 1.0, 100.0)
         self._slider(left, "Scroll dead zone", "scroll_dead_zone", 0.0, 1.0)
+        self._slider(left, "Active area margin", "active_area_margin", 0.0, 0.45)
+        self._slider(left, "Open palm hold", "open_palm_hold_seconds", 0.3, 5.0)
+        self._slider(left, "Gesture debounce", "gesture_debounce_seconds", 0.0, 5.0)
+        self._slider(left, "Auto-pause seconds", "auto_pause_seconds", 0.0, 60.0)
 
         self._section_title(right, "SYSTEM // CONTROL")
         row = tk.Frame(right, bg=PANEL)
@@ -73,6 +79,7 @@ class PhantomApp(tk.Tk):
         self.vars["camera_index"] = tk.StringVar()
         ttk.Combobox(row, textvariable=self.vars["camera_index"], values=tuple(range(8)),
                      state="readonly", style="Phantom.TCombobox").pack(fill="x", pady=(7, 0))
+        self._check(right, "Enable pinch click", "click_enabled")
         self._check(right, "Fist gesture triggers Alt+Tab", "fist_alt_tab")
         self._check(right, "Show camera debug overlay", "debug_overlay")
 
@@ -88,6 +95,8 @@ class PhantomApp(tk.Tk):
         self.start_button.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.stop_button = self._button(buttons, "STOP", self.stop, DANGER, TEXT)
         self.stop_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self._button(right, "EMERGENCY PAUSE  Ctrl+Shift+P", self.emergency_pause,
+                     DANGER, TEXT).pack(fill="x", padx=22, pady=(0, 5))
         utility = tk.Frame(right, bg=PANEL)
         utility.pack(fill="x", padx=22, pady=5)
         self._button(utility, "SAVE SETTINGS", self.save, PANEL_2, TEXT).pack(
@@ -152,6 +161,11 @@ class PhantomApp(tk.Tk):
             scroll_sensitivity=float(self.vars["scroll_sensitivity"].get()),
             scroll_dead_zone=float(self.vars["scroll_dead_zone"].get()),
             camera_index=int(self.vars["camera_index"].get()),
+            active_area_margin=float(self.vars["active_area_margin"].get()),
+            click_enabled=bool(self.vars["click_enabled"].get()),
+            open_palm_hold_seconds=float(self.vars["open_palm_hold_seconds"].get()),
+            gesture_debounce_seconds=float(self.vars["gesture_debounce_seconds"].get()),
+            auto_pause_seconds=float(self.vars["auto_pause_seconds"].get()),
             fist_alt_tab=bool(self.vars["fist_alt_tab"].get()),
             debug_overlay=bool(self.vars["debug_overlay"].get()))
 
@@ -178,6 +192,7 @@ class PhantomApp(tk.Tk):
         if not self.save():
             return
         self.stop_event.clear()
+        self.pause_event.clear()
         settings = self._settings()
         self._status("●  STARTING CAMERA", YELLOW)
         self.worker = threading.Thread(target=self._run_engine, args=(settings,), daemon=True)
@@ -186,12 +201,18 @@ class PhantomApp(tk.Tk):
     def _run_engine(self, settings) -> None:
         try:
             gesture_engine.main(settings=settings, stop_event=self.stop_event,
+                                pause_event=self.pause_event,
                                 status_callback=lambda text: self.after(
                                     0, self._status, "●  " + text.upper(), YELLOW))
         except Exception as error:
             self.after(0, messagebox.showerror, "Phantom stopped", str(error))
         finally:
             self.after(0, self._status, "●  OFFLINE", MUTED)
+
+    def emergency_pause(self, event=None) -> None:
+        if self.worker and self.worker.is_alive():
+            self.pause_event.set()
+            self._status("●  EMERGENCY PAUSE", DANGER)
 
     def stop(self) -> None:
         self.stop_event.set()
